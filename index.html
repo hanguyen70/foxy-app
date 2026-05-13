@@ -503,12 +503,19 @@ async function loadFromGitHub(){
     let data;
     if(rawText.startsWith(FOXY_ENC_MARKER)||rawText.startsWith(FOXY_ENC_MARKER_V2)){
       const storedPin=localStorage.getItem('wtp3_pin')||'';
-      if(!storedPin){toast('Dữ liệu đã mã hóa — cần cài PIN trước','er');return;}
-      // Xác nhận PIN (2FA layer)
-      const inputPin=prompt('🔐 Nhập PIN để giải mã dữ liệu:');
+      // Trường hợp 1: Có PIN local → 2FA, verify match trước khi decrypt
+      // Trường hợp 2: Không có PIN local (vd: sau khi xóa data, cài lại thiết bị) → cho phép nhập PIN trực tiếp để khôi phục
+      const inputPin=prompt(storedPin?'🔐 Nhập PIN để giải mã dữ liệu:':'🔐 Dữ liệu cloud đã mã hóa.\nNhập PIN để giải mã và khôi phục:');
       if(inputPin===null){toast('Đã hủy','inf');return;}
-      if(inputPin!==storedPin){toast('❌ Sai PIN — không thể giải mã','er');return;}
-      data=await decryptData(rawText,storedPin);
+      if(!inputPin){toast('❌ PIN rỗng','er');return;}
+      if(storedPin&&inputPin!==storedPin){
+        toast('❌ Sai PIN — không khớp PIN trên thiết bị này','er');return;
+      }
+      try{
+        data=await decryptData(rawText,inputPin);
+      }catch(decErr){
+        toast('❌ Sai PIN — không giải mã được dữ liệu','er');return;
+      }
     } else {
       data=JSON.parse(rawText);
     }
