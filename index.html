@@ -281,9 +281,14 @@ if(isMobile){
 
 
 // ── MÃ HÓA AES-256-GCM (Web Crypto API) ─────────────────────────────────────
-const FOXY_ENC_MARKER='FOXY_ENC_V1:';
+// V1 (cũ): salt cố định 'FOXY_SALT_2026', 100k iterations — DEPRECATED, chỉ để đọc dữ liệu cũ
+// V2 (mới): salt random 16 bytes, 600k iterations (OWASP 2023) — dùng cho dữ liệu mới
+const FOXY_ENC_MARKER='FOXY_ENC_V1:';      // Marker cũ — vẫn dùng để decrypt dữ liệu V1
+const FOXY_ENC_MARKER_V2='FOXY_ENC_V2:';   // Marker mới — dùng cho encrypt từ giờ trở đi
+const FOXY_PBKDF2_ITER_V2=600000;          // OWASP 2023 khuyến nghị cho PBKDF2-SHA256
 
-async function deriveKey(pin){
+// V1 deriveKey — salt cố định, dùng để decrypt dữ liệu cũ
+async function deriveKeyV1(pin){
   const enc=new TextEncoder();
   const keyMaterial=await crypto.subtle.importKey('raw',enc.encode(pin),{name:'PBKDF2'},false,['deriveKey']);
   return crypto.subtle.deriveKey(
@@ -292,28 +297,65 @@ async function deriveKey(pin){
   );
 }
 
-async function encryptData(data,pin){
-  if(!pin)return JSON.stringify(data);
-  const iv=crypto.getRandomValues(new Uint8Array(12));
-  const key=await deriveKey(pin);
+// V2 deriveKey — salt động, 600k iterations
+async function deriveKeyV2(pin,salt){
   const enc=new TextEncoder();
-  const encrypted=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,enc.encode(JSON.stringify(data)));
-  // Kết hợp iv + encrypted → base64
-  const combined=new Uint8Array(iv.length+encrypted.byteLength);
-  combined.set(iv);combined.set(new Uint8Array(encrypted),iv.length);
-  return FOXY_ENC_MARKER+btoa(String.fromCharCode(...combined));
+  const keyMaterial=await crypto.subtle.importKey('raw',enc.encode(pin),{name:'PBKDF2'},false,['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {name:'PBKDF2',salt,iterations:FOXY_PBKDF2_ITER_V2,hash:'SHA-256'},
+    keyMaterial,{name:'AES-GCM',length:256},false,['encrypt','decrypt']
+  );
 }
 
+// Encrypt LUÔN dùng V2 (random salt + 600k iter)
+async function encryptData(data,pin){
+  if(!pin)return JSON.stringify(data);
+  const salt=crypto.getRandomValues(new Uint8Array(16));   // Random salt 16 bytes
+  const iv=crypto.getRandomValues(new Uint8Array(12));     // Random IV 12 bytes
+  const key=await deriveKeyV2(pin,salt);
+  const enc=new TextEncoder();
+  const encrypted=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,enc.encode(JSON.stringify(data)));
+  // Layout: [salt 16B][iv 12B][ciphertext...] → base64
+  const combined=new Uint8Array(salt.length+iv.length+encrypted.byteLength);
+  combined.set(salt,0);
+  combined.set(iv,salt.length);
+  combined.set(new Uint8Array(encrypted),salt.length+iv.length);
+  // btoa không an toàn với chuỗi rất dài → dùng chunk
+  let binStr='';
+  for(let i=0;i<combined.length;i+=8192){
+    binStr+=String.fromCharCode.apply(null,combined.subarray(i,i+8192));
+  }
+  return FOXY_ENC_MARKER_V2+btoa(binStr);
+}
+
+// Decrypt tự động nhận diện V1 hay V2
 async function decryptData(raw,pin){
-  if(!raw.startsWith(FOXY_ENC_MARKER)){
-    // Dữ liệu chưa mã hóa → trả về bình thường
+  // Dữ liệu chưa mã hóa
+  if(!raw.startsWith(FOXY_ENC_MARKER)&&!raw.startsWith(FOXY_ENC_MARKER_V2)){
     return JSON.parse(raw);
   }
   if(!pin)throw new Error('Dữ liệu đã mã hóa — cần nhập PIN để giải mã');
+
+  // V2 — salt random, 600k iter
+  if(raw.startsWith(FOXY_ENC_MARKER_V2)){
+    const combined=Uint8Array.from(atob(raw.slice(FOXY_ENC_MARKER_V2.length)),c=>c.charCodeAt(0));
+    const salt=combined.slice(0,16);
+    const iv=combined.slice(16,28);
+    const encrypted=combined.slice(28);
+    const key=await deriveKeyV2(pin,salt);
+    try{
+      const dec=await crypto.subtle.decrypt({name:'AES-GCM',iv},key,encrypted);
+      return JSON.parse(new TextDecoder().decode(dec));
+    }catch(e){
+      throw new Error('Sai PIN hoặc dữ liệu bị hỏng');
+    }
+  }
+
+  // V1 — salt cố định, 100k iter (dữ liệu cũ, sẽ tự migrate sang V2 lần sync tới)
   const combined=Uint8Array.from(atob(raw.slice(FOXY_ENC_MARKER.length)),c=>c.charCodeAt(0));
   const iv=combined.slice(0,12);
   const encrypted=combined.slice(12);
-  const key=await deriveKey(pin);
+  const key=await deriveKeyV1(pin);
   try{
     const dec=await crypto.subtle.decrypt({name:'AES-GCM',iv},key,encrypted);
     return JSON.parse(new TextDecoder().decode(dec));
@@ -326,7 +368,7 @@ async function decryptData(raw,pin){
 // Tách repo: foxy-app (public, host code) + FOXY (private, lưu dữ liệu)
 const GH_TOKEN_KEY='felix_gh_token';
 const GH_DATA_REPO='Hanguyen70/FOXY';      // Private — chứa felix-data.json
-const GH_APP_REPO='Hanguyen70/foxy-app';   // Public — chứa index.html (chỉ để hiển thị/log)
+const GH_APP_REPO='Hanguyen70/Foxy-app';   // Public — chứa index.html (chỉ để hiển thị/log)
 const GH_REPO=GH_DATA_REPO;                // Giữ tương thích ngược với code cũ
 const GH_FILE='index.html';
 const GH_BRANCH='main';
@@ -358,7 +400,7 @@ async function loadFromGitHub(){
     // GitHub API trả nội dung file dạng base64
     const rawText=decodeURIComponent(escape(atob(meta.content.replace(/\n/g,''))));
     let data;
-    if(rawText.startsWith(FOXY_ENC_MARKER)){
+    if(rawText.startsWith(FOXY_ENC_MARKER)||rawText.startsWith(FOXY_ENC_MARKER_V2)){
       const storedPin=localStorage.getItem('wtp3_pin')||'';
       if(!storedPin){toast('Dữ liệu đã mã hóa — cần cài PIN trước','er');return;}
       // Xác nhận PIN (2FA layer)
@@ -4009,9 +4051,9 @@ function showPinLock(){
       <div style="background:var(--sur);border:1px solid var(--b2);border-radius:13px;padding:32px 28px;width:min(340px,90vw);text-align:center">
         <div style="font-family:DM Serif Display,serif;font-size:1.6rem;color:var(--ac);margin-bottom:6px">FOXY</div>
         <div style="font-size:.75rem;color:var(--t3);margin-bottom:24px;letter-spacing:1px">NHẬP MÃ PIN ĐỂ TIẾP TỤC</div>
-        <input type="password" id="pinInput" maxlength="8"
-          style="width:100%;background:var(--s2);border:1px solid var(--b2);border-radius:8px;padding:12px;font-size:1.4rem;letter-spacing:8px;text-align:center;color:var(--tx);margin-bottom:12px;font-family:DM Mono,monospace"
-          placeholder="••••" autofocus onkeydown="if(event.key==='Enter')submitPin()">
+        <input type="password" id="pinInput" maxlength="64"
+          style="width:100%;background:var(--s2);border:1px solid var(--b2);border-radius:8px;padding:12px;font-size:1rem;letter-spacing:2px;text-align:center;color:var(--tx);margin-bottom:12px;font-family:DM Mono,monospace"
+          placeholder="PIN hoặc passphrase" autofocus onkeydown="if(event.key==='Enter')submitPin()">
         <div id="pinErr" style="color:var(--rd);font-size:.72rem;min-height:18px;margin-bottom:10px"></div>
         <button onclick="submitPin()"
           style="width:100%;background:var(--ac);color:#07090e;border:none;border-radius:8px;padding:10px;font-family:Syne,sans-serif;font-weight:700;font-size:.85rem;cursor:pointer">
@@ -6138,10 +6180,15 @@ P.settings=function(){
           <button class="btn brd sm" onclick="showSecurityLog()">🔐 Xem log</button>
         </div>
         <div class="fh">Nhận cảnh báo ngay khi có người nhập sai PIN</div>
-        <div class="ct" style="margin-top:12px">🔐 Bảo mật PIN</div>
-        <div class="fg"><label>Mã PIN (4–8 số, để trống = tắt PIN)</label>
-          <input type="password" id="pinSet" maxlength="8" placeholder="${getPin()?'Đã cài PIN — nhập mới để đổi':'Chưa cài PIN'}">
-          <div class="fh">PIN sẽ đồng bộ cùng dữ liệu khi ⬆ Lưu cloud</div>
+        <div class="ct" style="margin-top:12px">🔐 Bảo mật PIN / Passphrase</div>
+        <div class="fg"><label>Mã PIN hoặc passphrase (4–64 ký tự, để trống = tắt)</label>
+          <input type="password" id="pinSet" maxlength="64" placeholder="${getPin()?'Đã cài PIN — nhập mới để đổi':'Khuyến nghị: passphrase ≥12 ký tự'}" oninput="updatePinStrength()">
+          <div id="pinStrength" style="margin-top:6px;font-size:.72rem;min-height:18px"></div>
+        </div>
+        <div class="fg"><label>Xác nhận lại passphrase</label>
+          <input type="password" id="pinSetConfirm" maxlength="64" placeholder="Gõ lại passphrase ở trên" oninput="updatePinMatch()">
+          <div id="pinMatch" style="margin-top:6px;font-size:.72rem;min-height:18px"></div>
+          <div class="fh">💪 An toàn nhất: passphrase ≥12 ký tự, có chữ+số+đặc biệt (vd: MeoMap@2026Vn). PIN số ngắn dễ bị bruteforce. PIN sẽ đồng bộ cùng dữ liệu khi ⬆ Lưu cloud.</div>
         <div class="fg mt10"><label>⏱ Tự động khóa sau</label>
           <select id="autoLockSel" onchange="saveAutoLock()">
             <option value="0" ${getAutoLockMin()===0?'selected':''}>Tắt (không tự khóa)</option>
@@ -6170,20 +6217,104 @@ P.settings=function(){
     </div>`;
 };
 
-function savePin(){
+// Đánh giá độ mạnh passphrase
+function evalPinStrength(v){
+  if(!v)return {level:0,text:'',color:''};
+  let score=0;
+  if(v.length>=8)score++;
+  if(v.length>=12)score++;
+  if(v.length>=16)score++;
+  if(/[a-z]/.test(v))score++;
+  if(/[A-Z]/.test(v))score++;
+  if(/\d/.test(v))score++;
+  if(/[^a-zA-Z0-9]/.test(v))score++;
+  if(score<=2)return {level:1,text:'⚠️ Yếu — dễ bị bruteforce',color:'#f87171'};
+  if(score<=4)return {level:2,text:'🟡 Trung bình — nên tăng độ dài',color:'#facc15'};
+  if(score<=5)return {level:3,text:'🟢 Khá tốt',color:'#4ade80'};
+  return {level:4,text:'💪 Rất mạnh',color:'#4ade80'};
+}
+
+function updatePinStrength(){
+  const v=document.getElementById('pinSet')?.value||'';
+  const el=document.getElementById('pinStrength');
+  if(!el)return;
+  if(!v){el.textContent='';el.style.color='';return;}
+  const s=evalPinStrength(v);
+  el.textContent=s.text+' ('+v.length+' ký tự)';
+  el.style.color=s.color;
+  updatePinMatch();
+}
+
+function updatePinMatch(){
+  const v1=document.getElementById('pinSet')?.value||'';
+  const v2=document.getElementById('pinSetConfirm')?.value||'';
+  const el=document.getElementById('pinMatch');
+  if(!el)return;
+  if(!v2){el.textContent='';el.style.color='';return;}
+  if(v1===v2){el.textContent='✓ Hai ô khớp nhau';el.style.color='#4ade80';}
+  else{el.textContent='✗ Hai ô KHÔNG khớp';el.style.color='#f87171';}
+}
+
+async function savePin(){
   const v=document.getElementById('pinSet')?.value.trim();
-  if(v&&(v.length<4||!/^\d+$/.test(v))){toast('PIN phải là 4–8 chữ số','er');return;}
-  if(v){
-    localStorage.setItem(SEC_KEY,v);
-    db.pin=v; // lưu vào db để sync
-    save();
-    toast('✅ Đã cài PIN — sẽ đồng bộ khi ⬆ Lưu cloud');
-  } else {
+  const v2=document.getElementById('pinSetConfirm')?.value.trim();
+
+  // Trường hợp để trống → tắt PIN (cần xác nhận)
+  if(!v){
+    if(!getPin()){toast('Chưa có PIN để tắt','inf');return;}
+    if(!confirm('⚠️ Tắt PIN?\n\nDữ liệu cloud sẽ KHÔNG còn mã hóa.\nMọi người có token đều đọc được.\n\nXác nhận tắt?'))return;
     localStorage.removeItem(SEC_KEY);
     delete db.pin;
     save();
-    toast('PIN đã tắt','inf');
+    toast('🔓 PIN đã tắt — dữ liệu không còn mã hóa','er');
+    P.settings();
+    return;
   }
+
+  // Kiểm tra độ dài
+  if(v.length<4||v.length>64){toast('PIN/passphrase phải 4–64 ký tự','er');return;}
+
+  // KIỂM TRA XÁC NHẬN 2 LẦN
+  if(v!==v2){
+    toast('❌ Hai ô passphrase không khớp — kiểm tra lại','er');
+    document.getElementById('pinSetConfirm')?.focus();
+    return;
+  }
+
+  // Cảnh báo passphrase yếu
+  const strength=evalPinStrength(v);
+  if(strength.level<=2){
+    const isDigitsOnly=/^\d+$/.test(v);
+    const msg=isDigitsOnly
+      ? '⚠️ Passphrase chỉ '+v.length+' chữ số → DỄ bị bruteforce.\n\nKhuyến nghị passphrase ≥12 ký tự, có chữ+số+đặc biệt.\n\nVẫn dùng?'
+      : '⚠️ Passphrase độ mạnh: '+strength.text+'\n\nNên ≥12 ký tự với chữ HOA+thường+số+ký tự đặc biệt.\n\nVẫn dùng?';
+    if(!confirm(msg))return;
+  }
+
+  // TEST ENCRYPT/DECRYPT VÒNG KÍN — đảm bảo passphrase hoạt động đúng
+  try{
+    const testData={_test:'foxy_verify_'+Date.now(),sample:[1,2,3]};
+    const enc=await encryptData(testData,v);
+    if(!enc.startsWith(FOXY_ENC_MARKER_V2))throw new Error('Encrypt không tạo V2');
+    const dec=await decryptData(enc,v);
+    if(JSON.stringify(dec)!==JSON.stringify(testData))throw new Error('Decrypt không khớp dữ liệu gốc');
+  }catch(e){
+    toast('❌ Test mã hóa thất bại: '+e.message,'er');
+    return;
+  }
+
+  // CẢNH BÁO CUỐI — passphrase mất là mất dữ liệu vĩnh viễn
+  const isNew=!getPin();
+  const finalMsg=isNew
+    ? '🔐 XÁC NHẬN CUỐI\n\nBạn sắp cài passphrase mới:\n• Độ dài: '+v.length+' ký tự\n• Độ mạnh: '+strength.text+'\n\n⚠️ QUAN TRỌNG: Nếu mất passphrase này, KHÔNG thể khôi phục dữ liệu. App không có "Quên mật khẩu".\n\nHãy:\n1. Ghi passphrase vào password manager (1Password, Bitwarden, iCloud Keychain)\n2. HOẶC ghi giấy cất nơi an toàn\n\nXác nhận lưu?'
+    : '🔐 XÁC NHẬN ĐỔI PASSPHRASE\n\n• Độ dài mới: '+v.length+' ký tự\n• Độ mạnh: '+strength.text+'\n\n⚠️ Sau khi đổi: dữ liệu cloud cũ vẫn dùng PIN cũ. Bấm ⬆ Lưu cloud để re-encrypt với passphrase mới.\n\nXác nhận đổi?';
+  if(!confirm(finalMsg))return;
+
+  // Lưu
+  localStorage.setItem(SEC_KEY,v);
+  db.pin=v;
+  save();
+  toast('✅ Đã lưu passphrase — Bấm ⬆ Lưu cloud để mã hóa lại dữ liệu trên repo');
   P.settings();
 }
 function removePin(){
@@ -6209,7 +6340,7 @@ async function autoLoadCloudOnMobile(){
     const meta=await resp.json();
     const rawTxt=decodeURIComponent(escape(atob(meta.content.replace(/\n/g,''))));
     let data;
-    if(rawTxt.startsWith(FOXY_ENC_MARKER)){
+    if(rawTxt.startsWith(FOXY_ENC_MARKER)||rawTxt.startsWith(FOXY_ENC_MARKER_V2)){
       const mPin=localStorage.getItem('wtp3_pin')||'';
       if(!mPin)return; // Không có PIN → bỏ qua
       try{data=await decryptData(rawTxt,mPin);}catch(e){return;}
