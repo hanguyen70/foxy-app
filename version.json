@@ -1,0 +1,13 @@
+{
+  "version": "2.0.0",
+  "released": "2026-05-13",
+  "critical": false,
+  "changelog": [
+    "Mã hóa V2: PBKDF2 600,000 iterations + random salt 16 bytes",
+    "Hỗ trợ passphrase 4-64 ký tự (chữ + số + đặc biệt)",
+    "Xác nhận passphrase 2 lần khi đổi + cảnh báo độ mạnh real-time",
+    "Tách repo: dữ liệu private (FOXY), code public (Foxy-app)",
+    "Hệ thống thông báo cập nhật tự động"
+  ],
+  "_note": "File này được app FOXY check 24h/lần. Khi release bản mới, bump 'version' và update 'changelog' + 'released'. Đặt 'critical: true' nếu bản cập nhật buộc phải apply (vd: sửa lỗi bảo mật)."
+}

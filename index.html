@@ -231,6 +231,107 @@ textarea{resize:vertical;min-height:56px;}
 
 <script>
 'use strict';
+// ── APP VERSION & UPDATE CHECK ───────────────────────────────────
+const APP_VERSION='2.0.0';
+const APP_BUILD_DATE='2026-05-13';
+const VERSION_CHECK_URL='https://raw.githubusercontent.com/Hanguyen70/Foxy-app/main/version.json';
+const VERSION_CHECK_INTERVAL=24*60*60*1000; // 24 giờ
+const VERSION_CHECK_KEY='foxy_last_version_check';
+const VERSION_SKIP_KEY='foxy_skip_version';
+
+// So sánh semver "2.1.0" vs "2.0.5"
+function compareVersions(a,b){
+  const pa=a.split('.').map(Number);
+  const pb=b.split('.').map(Number);
+  for(let i=0;i<3;i++){
+    if((pa[i]||0)>(pb[i]||0))return 1;
+    if((pa[i]||0)<(pb[i]||0))return -1;
+  }
+  return 0;
+}
+
+async function checkForUpdate(force=false){
+  // Skip nếu đã check trong 24h (trừ khi force=true)
+  if(!force){
+    const last=parseInt(localStorage.getItem(VERSION_CHECK_KEY)||'0');
+    if(Date.now()-last<VERSION_CHECK_INTERVAL)return null;
+  }
+  try{
+    const resp=await fetch(VERSION_CHECK_URL+'?t='+Date.now(),{cache:'no-store'});
+    if(!resp.ok)return null;
+    const info=await resp.json();
+    localStorage.setItem(VERSION_CHECK_KEY,Date.now().toString());
+    if(!info.version)return null;
+    const cmp=compareVersions(info.version,APP_VERSION);
+    if(cmp<=0)return null; // Cùng version hoặc cũ hơn → không có update
+    // Có bản mới
+    return info;
+  }catch(e){
+    console.warn('Version check failed:',e);
+    return null;
+  }
+}
+
+function showUpdateBanner(info){
+  // Skip nếu user đã chọn "bỏ qua phiên bản này"
+  if(!info.critical&&localStorage.getItem(VERSION_SKIP_KEY)===info.version)return;
+  // Xóa banner cũ nếu có
+  const old=document.getElementById('updateBanner');
+  if(old)old.remove();
+  const banner=document.createElement('div');
+  banner.id='updateBanner';
+  const isCritical=info.critical===true;
+  banner.style.cssText='position:fixed;top:0;left:0;right:0;z-index:10000;background:'+(isCritical?'#dc2626':'#1e40af')+';color:#fff;padding:12px 16px;box-shadow:0 2px 8px rgba(0,0,0,.3);font-size:.85rem;display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:center';
+  const changelogHtml=Array.isArray(info.changelog)&&info.changelog.length
+    ? '<div style="font-size:.75rem;opacity:.9;margin-top:4px;text-align:left;max-width:600px">• '+info.changelog.map(c=>String(c).replace(/[<>]/g,'')).join('<br>• ')+'</div>'
+    : '';
+  banner.innerHTML='<div style="flex:1;min-width:200px"><div style="font-weight:700">'+(isCritical?'🚨 CẬP NHẬT QUAN TRỌNG':'🆕 Có bản cập nhật mới')+': v'+String(info.version).replace(/[<>]/g,'')+(info.released?' ('+String(info.released).replace(/[<>]/g,'')+')':'')+'</div>'+changelogHtml+'</div>'+
+    '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+    '<button onclick="reloadForUpdate()" style="background:#fff;color:'+(isCritical?'#dc2626':'#1e40af')+';border:none;padding:6px 14px;border-radius:6px;font-weight:600;cursor:pointer;font-size:.8rem">🔄 Cập nhật ngay</button>'+
+    (isCritical?'':'<button onclick="dismissUpdate(\''+String(info.version).replace(/[^0-9.]/g,'')+'\')" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.4);padding:6px 14px;border-radius:6px;cursor:pointer;font-size:.8rem">Bỏ qua bản này</button>')+
+    '</div>';
+  document.body.appendChild(banner);
+}
+
+function reloadForUpdate(){
+  // Clear cache trước khi reload
+  if('caches' in window){
+    caches.keys().then(names=>{
+      names.forEach(n=>caches.delete(n));
+      location.reload(true);
+    });
+  } else {
+    location.reload(true);
+  }
+}
+
+function dismissUpdate(version){
+  localStorage.setItem(VERSION_SKIP_KEY,version);
+  const b=document.getElementById('updateBanner');
+  if(b)b.remove();
+}
+
+// Manual check từ Settings
+async function manualCheckUpdate(){
+  toast('🔍 Đang kiểm tra cập nhật...','inf');
+  const info=await checkForUpdate(true);
+  if(info){
+    // Clear skip flag để hiện banner kể cả đã từng skip
+    localStorage.removeItem(VERSION_SKIP_KEY);
+    showUpdateBanner(info);
+    toast('🆕 Có bản mới: v'+info.version);
+  } else {
+    toast('✅ Bạn đang dùng phiên bản mới nhất (v'+APP_VERSION+')');
+  }
+}
+
+// Auto-check khi app khởi động (sau 3s để không chặn UI)
+setTimeout(()=>{
+  checkForUpdate().then(info=>{
+    if(info)showUpdateBanner(info);
+  });
+},3000);
+
 // ── DB & UTILS ───────────────────────────────────────────────────
 const DB='wtp3';
 const BLANK=()=>({exRate:25400,exRateDate:'',realestate:[],vessels:[],companies:[],cash:[],gold:[],equity:[],receivables:[],payables:[],snapshots:[],rates:[],perfData:{},fxRates:{AUD:0.65,EUR:1.08,SGD:0.74}});
@@ -6206,6 +6307,17 @@ P.settings=function(){
         <div class="flex g8 mt8">
           <button class="btn bp sm" onclick="savePin()">💾 Lưu PIN & Sync</button>
           ${getPin()?`<button class="btn brd sm" onclick="removePin()">🔓 Tắt PIN</button>`:''}
+        </div>
+        <div class="ct" style="margin-top:12px">ℹ Phiên bản</div>
+        <div class="fg">
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0">
+            <div>
+              <div style="font-weight:600">FOXY Asset Manager</div>
+              <div class="fh">v${APP_VERSION} — Build ${APP_BUILD_DATE}</div>
+            </div>
+            <button class="btn brd sm" onclick="manualCheckUpdate()">🔄 Kiểm tra cập nhật</button>
+          </div>
+          <div class="fh">App tự động kiểm tra cập nhật mỗi 24 giờ. Khi có bản mới, banner sẽ hiện ở đầu trang.</div>
         </div>
         <div class="ct" style="margin-top:12px">⚠ Vùng nguy hiểm</div>
         <div class="flex g8 fw mb8">
