@@ -213,6 +213,7 @@ textarea{resize:vertical;min-height:56px;}
         <button onclick="syncToGitHub()" title="Sync lên GitHub → iPhone" class="btn bg sm desktop-only">⬆ Lưu cloud</button>
         <button class="btn bg sm" onclick="loadFromGitHub()" title="Tải dữ liệu mới nhất từ GitHub">⬇ Tải cloud</button>
         <span id="syncInd" style="font-size:.72rem;min-width:70px;display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:20px;border:1px solid transparent;transition:all .3s;cursor:default"></span>
+        <button class="btn bg sm" onclick="go('settings')" title="Cài đặt">⚙</button>
         <button class="btn bg sm" onclick="lockApp()" title="Khóa màn hình">🔒</button>
         <button class="btn brd sm desktop-only" onclick="endSession()" title="Sync cloud + xóa dữ liệu khỏi máy này" style="color:#f87171;border-color:#f87171">⏏ Thoát</button>
         <button class="btn bg sm desktop-only" onclick="exportJSON()">⬇ Export</button>
@@ -793,7 +794,8 @@ function getVesselModule(type){
 }
 const PTITLES={dashboard:'Dashboard',reports:'Báo cáo',realestate:'Nhà đất',company:'Công ty',performance:'Hiệu quả khai thác tài sản',vessels:'Tàu thuyền',machinery:'Máy móc / Thiết bị',other:'Khác',cash:'Tiền mặt / NH',gold:'Vàng / SJC',equity:'Góp vốn',receivables:'Phải thu',payables:'Phải trả',settings:'Cài đặt',rates:'Tỷ giá & Giá vàng'};
 function go(page){
-  if(isMobile&&page!=='dashboard'){return;} // mobile: chỉ dashboard
+  // Mobile: cho phép dashboard và settings, các trang khác chặn
+  if(isMobile&&page!=='dashboard'&&page!=='settings'){return;}
   curP=page;
   document.querySelectorAll('.ni[data-p]').forEach(e=>e.classList.toggle('on',e.dataset.p===page));
   document.getElementById('PT').textContent=PTITLES[page]||page;
