@@ -4167,9 +4167,30 @@ function showPinLock(){
           style="width:100%;background:var(--ac);color:#07090e;border:none;border-radius:8px;padding:10px;font-family:Syne,sans-serif;font-weight:700;font-size:.85rem;cursor:pointer">
           Mở khóa
         </button>
-        <div style="margin-top:16px;font-size:.65rem;color:var(--t3)">Quên PIN? Xóa localStorage key "wtp3_pin" trong DevTools</div>
+        <div style="margin-top:14px;border-top:1px solid var(--b2);padding-top:14px">
+          <button onclick="forgotPinRestore()"
+            style="width:100%;background:transparent;color:var(--t2);border:1px solid var(--b2);border-radius:8px;padding:8px;font-size:.75rem;cursor:pointer">
+            🔄 Quên PIN? Khôi phục từ cloud
+          </button>
+          <div style="margin-top:10px;font-size:.62rem;color:var(--t3);line-height:1.4">App sẽ xóa PIN cũ trên thiết bị này và tải lại dữ liệu từ cloud (cần token GitHub)</div>
+        </div>
       </div>
     </div>`;
+}
+
+// Hàm khôi phục: xóa PIN local + token để bắt đầu lại flow nhập từ cloud
+function forgotPinRestore(){
+  if(!confirm('🔄 Khôi phục từ cloud?\n\nApp sẽ:\n• Xóa PIN cũ trên thiết bị này\n• Reload và yêu cầu bạn nhập GitHub token\n• Tải dữ liệu từ cloud và yêu cầu PIN để giải mã\n\nDữ liệu trên cloud KHÔNG bị xóa.\n\nTiếp tục?'))return;
+  try{
+    localStorage.removeItem('wtp3_pin');
+    localStorage.removeItem('wtp3_lockout_until');
+    localStorage.removeItem('wtp3_pin_attempts');
+    sessionStorage.removeItem('wtp3_unlocked');
+    alert('✅ Đã xóa PIN trên thiết bị.\n\nApp sẽ reload. Sau đó:\n1. Vào Settings dán token (nếu chưa có)\n2. Bấm ⬇ Tải cloud\n3. Nhập PIN cũ khi được hỏi');
+    location.reload();
+  }catch(e){
+    alert('Lỗi: '+e.message);
+  }
 }
 async function submitPin(){
   const input=document.getElementById('pinInput');
