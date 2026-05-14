@@ -6243,12 +6243,12 @@ P.settings=function(){
         <div class="ct">📤 GitHub Sync — iPhone/iPad</div>
         <div class="fg"><label>GitHub Token</label>
           <input type="password" id="gh-token-input" value="${getGHToken()?'••••••••••••':''}" placeholder="github_pat_...">
-          <div class="fh">Token cho phép upload file lên GitHub tự động</div>
+          <div class="fh">Token cho phép upload/tải file từ GitHub. Sau khi dán, BẤM NÚT "💾 LƯU TOKEN" bên dưới.</div>
         </div>
-        <div class="flex g8 mt8">
-          <button class="btn bg sm" onclick="saveGHToken()">💾 Lưu token</button>
-          <button class="btn bp sm" onclick="syncToGitHub()">📤 Sync lên GitHub ngay</button>
-          <button class="btn bg sm" onclick="loadFromGitHub()">📥 Tải từ GitHub</button>
+        <div class="flex g8 mt8" style="flex-wrap:wrap">
+          <button class="btn bp sm" onclick="saveGHToken()" style="font-weight:700;min-width:140px">💾 LƯU TOKEN</button>
+          <button class="btn bg sm" onclick="syncToGitHub()">📤 Sync lên cloud</button>
+          <button class="btn bg sm" onclick="loadFromGitHub()">📥 Tải từ cloud</button>
           <button class="btn brd sm" onclick="clearGHToken()">🗑 Xóa token</button>
         </div>
         <div class="fh mt8" style="color:var(--ac)">
