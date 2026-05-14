@@ -487,15 +487,37 @@ async function loadFromGitHub(){
   if(ind)ind.textContent='⏳';
   try{
     // Repo data đã chuyển sang private → phải dùng GitHub API + token
-    const token=getGHToken();
-    if(!token)throw new Error('Cần GitHub token để đọc dữ liệu (repo private). Vào Settings để nhập.');
+    let token=getGHToken();
+    if(!token){
+      // Không có token → hỏi user dán vào ngay (không bắt vào Settings)
+      const pasted=prompt('🔑 Cần GitHub token để đọc dữ liệu từ repo private.\n\nDán token (bắt đầu bằng github_pat_...) vào đây:');
+      if(!pasted){
+        if(ind)ind.textContent='';
+        toast('Đã hủy','inf');
+        return;
+      }
+      const trimmed=pasted.trim();
+      if(!trimmed.startsWith('github_pat_')&&!trimmed.startsWith('ghp_')){
+        if(ind)ind.textContent='';
+        toast('❌ Token không hợp lệ — phải bắt đầu bằng github_pat_ hoặc ghp_','er');
+        return;
+      }
+      // Lưu token vào sessionStorage (giống saveGHToken làm)
+      sessionStorage.setItem(GH_TOKEN_KEY,trimmed);
+      token=trimmed;
+      toast('🔑 Đã lưu token tạm thời (session này)','inf');
+    }
     const apiUrl='https://api.github.com/repos/'+GH_DATA_REPO+'/contents/felix-data.json?ref='+GH_BRANCH+'&t='+Date.now();
     const resp=await fetch(apiUrl,{
       headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json'}
     });
     if(!resp.ok){
       if(resp.status===404)throw new Error('Chưa có dữ liệu cloud. Hãy ⬆ Lưu cloud từ máy tính trước.');
-      if(resp.status===401||resp.status===403)throw new Error('Token không hợp lệ hoặc thiếu quyền repo. Kiểm tra lại token.');
+      if(resp.status===401||resp.status===403){
+        // Token sai → xóa token đã lưu để lần sau hỏi lại
+        sessionStorage.removeItem(GH_TOKEN_KEY);
+        throw new Error('Token không hợp lệ hoặc thiếu quyền. Bấm lại Tải cloud để nhập token mới.');
+      }
       throw new Error('Lỗi tải dữ liệu: HTTP '+resp.status);
     }
     const meta=await resp.json();
@@ -6243,13 +6265,13 @@ P.settings=function(){
         <div class="ct">📤 GitHub Sync — iPhone/iPad</div>
         <div class="fg"><label>GitHub Token</label>
           <input type="password" id="gh-token-input" value="${getGHToken()?'••••••••••••':''}" placeholder="github_pat_...">
-          <div class="fh">Token cho phép upload/tải file từ GitHub. Sau khi dán, BẤM NÚT "💾 LƯU TOKEN" bên dưới.</div>
+          <div class="fh">Token cho phép upload/tải file từ GitHub. Sau khi dán, BẤM NÚT MÀU VÀNG bên dưới.</div>
         </div>
-        <div class="flex g8 mt8" style="flex-wrap:wrap">
-          <button class="btn bp sm" onclick="saveGHToken()" style="font-weight:700;min-width:140px">💾 LƯU TOKEN</button>
-          <button class="btn bg sm" onclick="syncToGitHub()">📤 Sync lên cloud</button>
-          <button class="btn bg sm" onclick="loadFromGitHub()">📥 Tải từ cloud</button>
-          <button class="btn brd sm" onclick="clearGHToken()">🗑 Xóa token</button>
+        <button onclick="saveGHToken()" style="display:block;width:100%;background:#fbbf24;color:#000;border:none;border-radius:8px;padding:14px;font-weight:800;font-size:1rem;cursor:pointer;margin-top:10px;box-shadow:0 2px 6px rgba(0,0,0,.2)">💾 LƯU TOKEN</button>
+        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+          <button class="btn bg sm" onclick="syncToGitHub()" style="flex:1;min-width:120px">📤 Sync lên cloud</button>
+          <button class="btn bg sm" onclick="loadFromGitHub()" style="flex:1;min-width:120px">📥 Tải từ cloud</button>
+          <button class="btn brd sm" onclick="clearGHToken()" style="flex:1;min-width:120px">🗑 Xóa token</button>
         </div>
         <div class="fh mt8" style="color:var(--ac)">
           📱 Sau khi sync → iPhone mở FOXY → refresh là xem dữ liệu mới
