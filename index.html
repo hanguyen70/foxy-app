@@ -2849,6 +2849,33 @@ function delVSRent(assetId, idx){
   save();closeM();toast('Đã xóa','er');viewVS(assetId);
 }
 
+function reopenDT(key, accId){
+  const a=(db[key]||[]).find(x=>x.id===accId);if(!a)return;
+  const isRec=key==='receivables';
+  if(!confirm('🔓 Mở lại khoản '+(isRec?'phải thu':'phải trả')+'?\n\nKhoản '+esc(a.counterparty)+' sẽ chuyển từ "Đã tất toán" → "Đang theo dõi".\n\nDư nợ sẽ được tính lại từ các giao dịch hiện có.\n\nTiếp tục?'))return;
+  // Xóa status đóng
+  delete a.status;
+  // Tính lại số dư
+  a.txs=(a.txs||[]).sort((x,y)=>{
+    const dx=new Date(x.date||0).getTime();
+    const dy=new Date(y.date||0).getTime();
+    if(dx!==dy)return dx-dy;
+    return (x.id||'').localeCompare(y.id||'');
+  });
+  let bal=a.amount||0;
+  a.txs.forEach(tx=>{
+    if(tx.type==='pay')bal-=(tx.amt||0);
+    else if(tx.type==='extra')bal+=(tx.amt||0);
+    tx.bal=bal;
+  });
+  a.balance=Math.max(bal,0); // không cho âm
+  save();
+  toast('🔓 Đã mở lại khoản — bạn có thể nhập giao dịch mới');
+  closeM();
+  if(key==='receivables')P.receivables();else P.payables();
+  setTimeout(()=>viewDT(key,accId),100);
+}
+
 function recalcDT(key, accId){
   const a=(db[key]||[]).find(x=>x.id===accId);if(!a)return;
   if(!confirm('🔄 Tính lại số dư từ đầu?\n\nApp sẽ:\n• Sắp xếp giao dịch theo ngày\n• Tính lại số dư của từng giao dịch\n• Cập nhật dư nợ hiện tại\n\nKhông xóa dữ liệu nào.'))return;
@@ -4044,7 +4071,7 @@ function viewDT(key,id){
       ${!isRec?`<button class="btn brd sm" onclick="addDTTx('${key}','${id}','int')">% Lãi đã trả</button>
                <button class="btn bg sm" onclick="addDTTx('${key}','${id}','extra')">＋ Vay thêm</button>`:''}
         <button class="btn bg sm" onclick="addDTTx('${key}','${id}','int')">⭐ Ghi lãi</button>
-        <button class="btn bg sm" onclick="closeDT('${key}','${id}')">✓ Tất toán</button>`:''}
+        <button class="btn bg sm" onclick="closeDT('${key}','${id}')">✓ Tất toán</button>`:`<button class="btn bp sm" onclick="reopenDT('${key}','${id}')" style="background:#fb923c;color:#000;font-weight:700">🔓 Mở lại khoản (chưa tất toán)</button>`}
       <button class="btn bg sm" onclick="recalcDT('${key}','${id}')" title="Tính lại số dư từ giao dịch">🔄 Tính lại</button>
       <button class="btn brd sm" onclick="delDT('${key}','${id}')">🗑 Xóa</button>
     </div>
