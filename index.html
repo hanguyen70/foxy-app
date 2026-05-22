@@ -673,7 +673,8 @@ function autoSync(){
 function _doSync(){
   const url=getGASUrl();if(!url)return;
   _syncStatus='syncing';updateSyncInd();
-  fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+  // text/plain → tránh CORS preflight (Apps Script không trả lời preflight đúng cách)
+  fetch(url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},
     body:JSON.stringify({action:'save',payload:JSON.stringify(db)})})
     .then(r=>r.json()).then(r=>{
       if(r.ok){localStorage.setItem('wtp3_last_sync',new Date().toISOString());_syncStatus='ok';}
@@ -952,7 +953,7 @@ function syncDrive(){
   const url=getGASUrl();if(!url){toast('Chưa cấu hình GAS URL','er');return;}
   clearTimeout(_syncTimer);_syncStatus='syncing';updateSyncInd();
   toast('Đang sync...','inf');
-  fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+  fetch(url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},
     body:JSON.stringify({action:'save',payload:JSON.stringify(db)})})
     .then(r=>r.json()).then(r=>{
       if(r.ok){
