@@ -4270,6 +4270,74 @@ function showSecurityLog(){
 }
 
 // ── BẢO MẬT PIN ──────────────────────────────────────────────────────────────
+// ╔═══════════ TOTP — GOOGLE AUTHENTICATOR 2FA ═══════════╗
+// Mã 6 số đổi mỗi 30 giây, theo chuẩn RFC 6238 (TOTP) + RFC 4226 (HOTP)
+const TOTP_SECRET_KEY='wtp3_totp_secret'; // localStorage key chứa secret base32
+const TOTP_ENABLED_KEY='wtp3_totp_enabled';
+const TOTP_B32_CHARS='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+// Sinh secret ngẫu nhiên (base32, 32 ký tự = 160 bit)
+function totpGenSecret(){
+  const bytes=crypto.getRandomValues(new Uint8Array(20));
+  let s='';
+  for(let i=0;i<bytes.length;i++)s+=TOTP_B32_CHARS[bytes[i]%32];
+  return s;
+}
+
+// Decode base32 → Uint8Array
+function base32Decode(str){
+  str=str.replace(/=+$/,'').toUpperCase().replace(/\s/g,'');
+  let bits='';
+  for(const c of str){
+    const idx=TOTP_B32_CHARS.indexOf(c);
+    if(idx===-1)continue;
+    bits+=idx.toString(2).padStart(5,'0');
+  }
+  const bytes=[];
+  for(let i=0;i+8<=bits.length;i+=8)bytes.push(parseInt(bits.substr(i,8),2));
+  return new Uint8Array(bytes);
+}
+
+// Sinh mã TOTP 6 số cho 1 thời điểm
+async function totpCode(secret,timeStep){
+  const key=base32Decode(secret);
+  // Counter = số chu kỳ 30 giây kể từ epoch
+  const counter=timeStep!==undefined?timeStep:Math.floor(Date.now()/1000/30);
+  const counterBytes=new Uint8Array(8);
+  let c=counter;
+  for(let i=7;i>=0;i--){counterBytes[i]=c&0xff;c=Math.floor(c/256);}
+  // HMAC-SHA1
+  const cryptoKey=await crypto.subtle.importKey('raw',key,{name:'HMAC',hash:'SHA-1'},false,['sign']);
+  const hmac=new Uint8Array(await crypto.subtle.sign('HMAC',cryptoKey,counterBytes));
+  // Dynamic truncation
+  const offset=hmac[19]&0xf;
+  const bin=((hmac[offset]&0x7f)<<24)|((hmac[offset+1]&0xff)<<16)|((hmac[offset+2]&0xff)<<8)|(hmac[offset+3]&0xff);
+  return (bin%1000000).toString().padStart(6,'0');
+}
+
+// Verify mã user nhập — chấp nhận cả chu kỳ trước/sau (±30s lệch giờ)
+async function totpVerify(secret,userCode){
+  if(!secret||!userCode)return false;
+  userCode=userCode.replace(/\s/g,'');
+  if(!/^\d{6}$/.test(userCode))return false;
+  const now=Math.floor(Date.now()/1000/30);
+  for(const delta of [-1,0,1]){
+    const code=await totpCode(secret,now+delta);
+    if(code===userCode)return true;
+  }
+  return false;
+}
+
+function totpIsEnabled(){return localStorage.getItem(TOTP_ENABLED_KEY)==='1'&&!!localStorage.getItem(TOTP_SECRET_KEY);}
+function getTotpSecret(){return localStorage.getItem(TOTP_SECRET_KEY)||'';}
+
+// URI cho QR code (chuẩn otpauth://)
+function totpUri(secret,label){
+  return 'otpauth://totp/'+encodeURIComponent('FOXY:'+(label||'Asset Manager'))
+    +'?secret='+secret+'&issuer=FOXY&algorithm=SHA1&digits=6&period=30';
+}
+// ╚════════════════════════════════════════════════════════╝
+
 const SEC_KEY='wtp3_pin';
 function getPin(){return localStorage.getItem(SEC_KEY)||'';}
 function checkPin(){
@@ -4352,6 +4420,11 @@ async function submitPin(){
   const entered=input.value.trim();
   if(entered===getPin()){
     localStorage.setItem(SEC_ATTEMPTS_KEY,'0');
+    // Nếu đã bật TOTP → yêu cầu nhập mã 6 số trước khi vào
+    if(totpIsEnabled()){
+      showTotpScreen();
+      return;
+    }
     secLog('login_ok','Đăng nhập thành công');
     sessionStorage.setItem('wtp3_unlocked','1');
     location.reload();
@@ -4369,7 +4442,119 @@ async function submitPin(){
   }
 }
 
-// ── TỶ GIÁ & GIÁ VÀNG ──────────────────────────────────────────────────────
+// Màn hình nhập mã Google Authenticator (sau khi PIN đúng)
+function showTotpScreen(){
+  document.body.innerHTML=`
+    <div style="position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:9999">
+      <div style="background:var(--sur);border:1px solid var(--b2);border-radius:13px;padding:32px 28px;width:min(340px,90vw);text-align:center">
+        <div style="font-size:2rem;margin-bottom:8px">🔐</div>
+        <div style="font-family:DM Serif Display,serif;font-size:1.3rem;color:var(--ac);margin-bottom:4px">Xác thực 2 lớp</div>
+        <div style="font-size:.73rem;color:var(--t3);margin-bottom:20px">Nhập mã 6 số từ Google Authenticator</div>
+        <input type="text" inputmode="numeric" id="totpInput" maxlength="6"
+          style="width:100%;background:var(--s2);border:1px solid var(--b2);border-radius:8px;padding:14px;font-size:1.6rem;letter-spacing:10px;text-align:center;color:var(--tx);margin-bottom:12px;font-family:DM Mono,monospace"
+          placeholder="000000" autofocus onkeydown="if(event.key==='Enter')submitTotp()">
+        <div id="totpErr" style="color:var(--rd);font-size:.72rem;min-height:18px;margin-bottom:10px"></div>
+        <button onclick="submitTotp()"
+          style="width:100%;background:var(--ac);color:#07090e;border:none;border-radius:8px;padding:11px;font-family:Syne,sans-serif;font-weight:700;font-size:.85rem;cursor:pointer">
+          Xác nhận
+        </button>
+        <div style="margin-top:14px;font-size:.62rem;color:var(--t3);line-height:1.4">Mã đổi mỗi 30 giây. Mở app Google Authenticator trên điện thoại để xem mã.</div>
+      </div>
+    </div>`;
+}
+
+async function submitTotp(){
+  const input=document.getElementById('totpInput');
+  if(!input)return;
+  const code=input.value.trim();
+  const err=document.getElementById('totpErr');
+  if(!/^\d{6}$/.test(code)){
+    if(err)err.textContent='❌ Mã phải là 6 chữ số';
+    return;
+  }
+  const ok=await totpVerify(getTotpSecret(),code);
+  if(ok){
+    secLog('login_ok','Đăng nhập thành công (PIN + 2FA)');
+    sessionStorage.setItem('wtp3_unlocked','1');
+    location.reload();
+  } else {
+    if(err)err.textContent='❌ Mã sai hoặc đã hết hạn — thử lại';
+    input.value='';input.focus();
+    setTimeout(()=>{if(err)err.textContent='';},3000);
+  }
+}
+
+
+// ── TOTP SETUP / DISABLE (gọi từ Settings) ──────────────────────
+let _totpPendingSecret=null;
+
+function totpSetupStart(){
+  if(!getPin()){
+    toast('⚠️ Cần cài PIN trước khi bật 2FA','er');
+    return;
+  }
+  _totpPendingSecret=totpGenSecret();
+  const secret=_totpPendingSecret;
+  const uri=totpUri(secret,'Asset Manager');
+  const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=200x200&data='+encodeURIComponent(uri);
+  const secretGrouped=secret.match(/.{1,4}/g).join(' ');
+  openM('🔑 Bật xác thực 2 lớp',`
+    <div style="font-size:.8rem;line-height:1.5">
+      <div style="background:var(--s2);border-radius:8px;padding:12px;margin-bottom:12px">
+        <b>Bước 1.</b> Cài app <b>Google Authenticator</b> trên điện thoại (miễn phí trên App Store / CH Play).
+      </div>
+      <div style="background:var(--s2);border-radius:8px;padding:12px;margin-bottom:12px">
+        <b>Bước 2.</b> Mở Google Authenticator → bấm <b>＋</b> → <b>Quét mã QR</b> → quét mã dưới đây:
+        <div style="text-align:center;margin:12px 0">
+          <img src="${qrUrl}" alt="QR" style="width:200px;height:200px;background:#fff;border-radius:8px;padding:6px" onerror="this.style.display='none';document.getElementById('qrFail').style.display='block'">
+          <div id="qrFail" style="display:none;color:var(--rd);font-size:.72rem">Không tải được QR — dùng cách nhập tay bên dưới</div>
+        </div>
+        <div style="font-size:.72rem;color:var(--t2)">Hoặc nhập tay mã khóa (chọn "Nhập khóa thiết lập"):</div>
+        <div style="font-family:DM Mono,monospace;font-size:.9rem;letter-spacing:1px;background:var(--bg);padding:8px;border-radius:6px;margin-top:6px;text-align:center;user-select:all;word-break:break-all">${secretGrouped}</div>
+      </div>
+      <div style="background:var(--s2);border-radius:8px;padding:12px;margin-bottom:12px">
+        <b>Bước 3.</b> Nhập mã 6 số đang hiện trên Google Authenticator để xác nhận:
+        <input type="text" inputmode="numeric" id="totpSetupCode" maxlength="6" placeholder="000000"
+          style="width:100%;background:var(--bg);border:1px solid var(--b2);border-radius:8px;padding:12px;font-size:1.3rem;letter-spacing:8px;text-align:center;color:var(--tx);margin-top:8px;font-family:DM Mono,monospace">
+        <div id="totpSetupErr" style="color:var(--rd);font-size:.72rem;min-height:16px;margin-top:6px"></div>
+      </div>
+      <div style="background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.3);border-radius:8px;padding:10px;margin-bottom:12px;font-size:.72rem">
+        ⚠️ <b>Quan trọng:</b> Lưu mã khóa trên vào nơi an toàn. Nếu mất điện thoại + mất mã khóa → không mở được app. Bạn vẫn có thể dùng "Khôi phục từ cloud" để reset.
+      </div>
+      <button class="btn bp" onclick="totpSetupConfirm()" style="width:100%;background:#fbbf24;color:#000;font-weight:700">✅ Xác nhận bật 2FA</button>
+    </div>`,'','md');
+}
+
+async function totpSetupConfirm(){
+  const code=(document.getElementById('totpSetupCode')?.value||'').trim();
+  const err=document.getElementById('totpSetupErr');
+  if(!/^\d{6}$/.test(code)){
+    if(err)err.textContent='❌ Nhập mã 6 chữ số';
+    return;
+  }
+  const ok=await totpVerify(_totpPendingSecret,code);
+  if(!ok){
+    if(err)err.textContent='❌ Mã sai — kiểm tra lại trên Google Authenticator (mã đổi mỗi 30s)';
+    return;
+  }
+  localStorage.setItem(TOTP_SECRET_KEY,_totpPendingSecret);
+  localStorage.setItem(TOTP_ENABLED_KEY,'1');
+  _totpPendingSecret=null;
+  secLog('totp_enabled','Đã bật xác thực 2 lớp');
+  closeM();
+  toast('✅ Đã bật xác thực 2 lớp — lần mở app tới sẽ cần mã 6 số');
+  P.settings();
+}
+
+function totpDisable(){
+  if(!confirm('🔓 Tắt xác thực 2 lớp?\n\nApp sẽ chỉ còn bảo vệ bằng PIN.\n\nXác nhận tắt?'))return;
+  localStorage.removeItem(TOTP_SECRET_KEY);
+  localStorage.removeItem(TOTP_ENABLED_KEY);
+  secLog('totp_disabled','Đã tắt xác thực 2 lớp');
+  toast('🔓 Đã tắt 2FA','inf');
+  P.settings();
+}
+
 function getRateYear(){return parseInt(document.getElementById('rateYear')||{value:new Date().getFullYear()});}
 
 P.rates=function(){
@@ -6482,6 +6667,20 @@ P.settings=function(){
         <div class="flex g8 mt8">
           <button class="btn bp sm" onclick="savePin()">💾 Lưu PIN & Sync</button>
           ${getPin()?`<button class="btn brd sm" onclick="removePin()">🔓 Tắt PIN</button>`:''}
+        </div>
+        <div class="ct" style="margin-top:12px">🔑 Xác thực 2 lớp (Google Authenticator)</div>
+        <div class="fg">
+          ${totpIsEnabled()?`
+            <div style="display:flex;align-items:center;gap:8px;padding:10px;background:rgba(74,222,128,.1);border:1px solid rgba(74,222,128,.3);border-radius:8px;margin-bottom:10px">
+              <span style="font-size:1.2rem">✅</span>
+              <div><div style="font-weight:700;color:var(--gn);font-size:.82rem">2FA đang BẬT</div>
+              <div class="fh">Mỗi lần mở app cần nhập mã 6 số từ Google Authenticator</div></div>
+            </div>
+            <button class="btn brd sm" onclick="totpDisable()">🔓 Tắt 2FA</button>
+          `:`
+            <div class="fh" style="margin-bottom:10px">Thêm lớp bảo mật: sau khi nhập PIN, app yêu cầu mã 6 số từ Google Authenticator. Chống người khác mở app dù biết PIN.</div>
+            <button class="btn bp sm" onclick="totpSetupStart()" style="background:#fbbf24;color:#000;font-weight:700">🔑 Bật xác thực 2 lớp</button>
+          `}
         </div>
         <div class="ct" style="margin-top:12px">ℹ Phiên bản</div>
         <div class="fg">
