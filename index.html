@@ -476,8 +476,8 @@ const GH_FILE='index.html';
 const GH_BRANCH='main';
 
 function getGHToken(){
-  // sessionStorage: mất khi đóng tab (an toàn hơn localStorage)
-  const t=sessionStorage.getItem(GH_TOKEN_KEY)||localStorage.getItem(GH_TOKEN_KEY+'_legacy')||'';
+  // localStorage: nhớ vĩnh viễn trên thiết bị (nhập 1 lần). sessionStorage chỉ là fallback cũ.
+  const t=localStorage.getItem(GH_TOKEN_KEY)||sessionStorage.getItem(GH_TOKEN_KEY)||localStorage.getItem(GH_TOKEN_KEY+'_legacy')||'';
   return t.replace(/[^\x20-\x7E]/g,'').trim();
 }
 
@@ -502,10 +502,10 @@ async function loadFromGitHub(){
         toast('❌ Token không hợp lệ — phải bắt đầu bằng github_pat_ hoặc ghp_','er');
         return;
       }
-      // Lưu token vào sessionStorage (giống saveGHToken làm)
-      sessionStorage.setItem(GH_TOKEN_KEY,trimmed);
+      // Lưu token vào localStorage (nhớ vĩnh viễn trên thiết bị này)
+      localStorage.setItem(GH_TOKEN_KEY,trimmed);
       token=trimmed;
-      toast('🔑 Đã lưu token tạm thời (session này)','inf');
+      toast('🔑 Đã lưu token — lần sau không cần nhập lại','inf');
     }
     const apiUrl='https://api.github.com/repos/'+GH_DATA_REPO+'/contents/felix-data.json?ref='+GH_BRANCH+'&t='+Date.now();
     const resp=await fetch(apiUrl,{
@@ -515,6 +515,7 @@ async function loadFromGitHub(){
       if(resp.status===404)throw new Error('Chưa có dữ liệu cloud. Hãy ⬆ Lưu cloud từ máy tính trước.');
       if(resp.status===401||resp.status===403){
         // Token sai → xóa token đã lưu để lần sau hỏi lại
+        localStorage.removeItem(GH_TOKEN_KEY);
         sessionStorage.removeItem(GH_TOKEN_KEY);
         throw new Error('Token không hợp lệ hoặc thiếu quyền. Bấm lại Tải cloud để nhập token mới.');
       }
@@ -936,15 +937,22 @@ function getGASUrl(){return localStorage.getItem('wtp3_gas')||'';}
 function saveGHToken(){
   const t=document.getElementById('gh-token-input')?.value?.trim();
   if(!t){toast('Nhập token','er');return;}
-  sessionStorage.setItem(GH_TOKEN_KEY,t);
-  // Xóa token cũ trong localStorage nếu có
-  localStorage.removeItem(GH_TOKEN_KEY);
+  // Nếu user để nguyên placeholder dấu chấm (đã có token) → không ghi đè
+  if(/^•+$/.test(t)){toast('Token đã được lưu từ trước','inf');return;}
+  if(!t.startsWith('github_pat_')&&!t.startsWith('ghp_')){
+    toast('❌ Token phải bắt đầu bằng github_pat_ hoặc ghp_','er');return;
+  }
+  // Lưu vĩnh viễn vào localStorage — nhập 1 lần, nhớ mãi trên thiết bị này
+  localStorage.setItem(GH_TOKEN_KEY,t);
   localStorage.removeItem(GH_TOKEN_KEY+'_legacy');
-  toast('✅ Đã lưu token — sẽ cần nhập lại khi mở tab mới');
+  sessionStorage.removeItem(GH_TOKEN_KEY);
+  toast('✅ Đã lưu token — nhớ vĩnh viễn trên thiết bị này, không cần nhập lại');
 }
 function clearGHToken(){
-  sessionStorage.removeItem(GH_TOKEN_KEY);
+  if(!confirm('🗑 Xóa token khỏi thiết bị này?\n\nLần sau muốn sync sẽ phải nhập lại token.\n\nXác nhận xóa?'))return;
   localStorage.removeItem(GH_TOKEN_KEY);
+  localStorage.removeItem(GH_TOKEN_KEY+'_legacy');
+  sessionStorage.removeItem(GH_TOKEN_KEY);
   const el=document.getElementById('gh-token-input');
   if(el)el.value='';
   toast('Đã xóa token','er');
