@@ -1,13 +1,12 @@
 {
-  "version": "2.1.0",
+  "version": "2.1.3",
   "released": "2026-05-28",
-  "critical": true,
+  "critical": false,
   "changelog": [
-    "Bảo mật: PIN không còn lưu dạng văn bản thường — chuyển sang verifier hash (PBKDF2)",
-    "Bảo mật: TOTP secret được mã hóa bằng PIN trước khi lưu",
-    "Backup tự động theo ngày trên repo + nút khôi phục trong Settings",
-    "Nhận biết quyền token (đọc / đọc-ghi) khi nhập, báo lỗi rõ ràng",
-    "Token chỉ-đọc trên iPhone: báo rõ khi không lưu được thay vì lỗi khó hiểu"
+    "iPhone: Thêm nút 🏠 trên thanh trên cùng để quay về màn hình chính từ mọi trang (sửa lỗi kẹt trong Cài đặt)",
+    "iPhone: Màn hình chính rút gọn — Tài sản ròng, Tổng tài sản, Tiền, Phải trả (cả USD + VNĐ)",
+    "An toàn: Ẩn nút xóa dữ liệu trên iPhone; nút xóa toàn bộ yêu cầu gõ xác nhận + tự sao lưu",
+    "Bao gồm các cải tiến bảo mật 2.1.0 (PIN verifier, mã hóa TOTP secret, backup theo ngày)"
   ],
   "_note": "File này được app FOXY check 24h/lần. Khi release bản mới, bump 'version' và update 'changelog' + 'released'. Đặt 'critical: true' nếu bản cập nhật buộc phải apply (vd: sửa lỗi bảo mật)."
 }
