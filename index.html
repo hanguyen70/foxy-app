@@ -233,8 +233,8 @@ textarea{resize:vertical;min-height:56px;}
 <script>
 'use strict';
 // ── APP VERSION & UPDATE CHECK ───────────────────────────────────
-const APP_VERSION='2.0.0';
-const APP_BUILD_DATE='2026-05-13';
+const APP_VERSION='2.1.0';
+const APP_BUILD_DATE='2026-05-28';
 const VERSION_CHECK_URL='https://raw.githubusercontent.com/Hanguyen70/Foxy-app/main/version.json';
 const VERSION_CHECK_INTERVAL=24*60*60*1000; // 24 giờ
 const VERSION_CHECK_KEY='foxy_last_version_check';
@@ -354,12 +354,9 @@ let db=(()=>{
   }catch(e){console.warn('DB load error:',e);}
   return BLANK();
 })();
-// Đồng bộ PIN từ db
-if(db&&db.pin){
-  if(localStorage.getItem('wtp3_pin')!==db.pin){
-    localStorage.setItem('wtp3_pin',db.pin);
-  }
-}
+// Đồng bộ PIN từ db: nếu db có field pin (dữ liệu nhập chưa mã hóa) và thiết bị
+// chưa có verifier → tạo verifier từ đó. Hoãn lại vì _setPinVerifier định nghĩa sau.
+let _pendingDbPin=(db&&db.pin)?db.pin:null;
 let _syncTimer=null,_syncStatus='idle';
 let _cloudSyncTimer=null;
 let _cloudSyncEnabled=localStorage.getItem('felix_auto_cloud')!=='off';
@@ -505,7 +502,12 @@ async function loadFromGitHub(){
       // Lưu token vào localStorage (nhớ vĩnh viễn trên thiết bị này)
       localStorage.setItem(GH_TOKEN_KEY,trimmed);
       token=trimmed;
-      toast('🔑 Đã lưu token — lần sau không cần nhập lại','inf');
+      // Phát hiện quyền của token để báo cho user biết (đọc-only hay đọc-ghi)
+      checkTokenPermission(trimmed).then(perm=>{
+        if(perm==='read')toast('🔑 Đã lưu token (quyền ĐỌC) — phù hợp xem dữ liệu trên iPhone','inf');
+        else if(perm==='write')toast('🔑 Đã lưu token (quyền ĐỌC + GHI) — lần sau không cần nhập lại','inf');
+        else toast('🔑 Đã lưu token — lần sau không cần nhập lại','inf');
+      });
     }
     const apiUrl='https://api.github.com/repos/'+GH_DATA_REPO+'/contents/felix-data.json?ref='+GH_BRANCH+'&t='+Date.now();
     const resp=await fetch(apiUrl,{
@@ -526,13 +528,13 @@ async function loadFromGitHub(){
     const rawText=decodeURIComponent(escape(atob(meta.content.replace(/\n/g,''))));
     let data;
     if(rawText.startsWith(FOXY_ENC_MARKER)||rawText.startsWith(FOXY_ENC_MARKER_V2)){
-      const storedPin=localStorage.getItem('wtp3_pin')||'';
-      // Trường hợp 1: Có PIN local → 2FA, verify match trước khi decrypt
-      // Trường hợp 2: Không có PIN local (vd: sau khi xóa data, cài lại thiết bị) → cho phép nhập PIN trực tiếp để khôi phục
-      const inputPin=prompt(storedPin?'🔐 Nhập PIN để giải mã dữ liệu:':'🔐 Dữ liệu cloud đã mã hóa.\nNhập PIN để giải mã và khôi phục:');
+      const hasPin=pinIsSet();
+      // Trường hợp 1: Thiết bị đã cài PIN → verify khớp verifier trước khi decrypt
+      // Trường hợp 2: Chưa cài PIN (vd: cài lại thiết bị) → cho phép nhập PIN trực tiếp để khôi phục
+      const inputPin=prompt(hasPin?'🔐 Nhập PIN để giải mã dữ liệu:':'🔐 Dữ liệu cloud đã mã hóa.\nNhập PIN để giải mã và khôi phục:');
       if(inputPin===null){toast('Đã hủy','inf');return;}
       if(!inputPin){toast('❌ PIN rỗng','er');return;}
-      if(storedPin&&inputPin!==storedPin){
+      if(hasPin&&!(await verifyPin(inputPin))){
         toast('❌ Sai PIN — không khớp PIN trên thiết bị này','er');return;
       }
       try{
@@ -540,6 +542,9 @@ async function loadFromGitHub(){
       }catch(decErr){
         toast('❌ Sai PIN — không giải mã được dữ liệu','er');return;
       }
+      // Giải mã thành công → PIN này là đúng, giữ trong RAM
+      _sessionPin=inputPin;
+      sessionStorage.setItem(SESSION_PIN_KEY,inputPin);
     } else {
       data=JSON.parse(rawText);
     }
@@ -551,8 +556,15 @@ async function loadFromGitHub(){
     const pin=data.pin;delete data.pin;delete data._saved;
     localStorage.setItem(DB,JSON.stringify(data));
     db=data;
-    if(pin){localStorage.setItem('wtp3_pin',pin);sessionStorage.removeItem('wtp3_unlocked');}
-    else localStorage.removeItem('wtp3_pin');
+    if(pin){
+      // Đồng bộ verifier từ PIN cloud (KHÔNG lưu PIN trần)
+      await _setPinVerifier(pin);
+      _sessionPin=pin;
+      sessionStorage.setItem(SESSION_PIN_KEY,pin);
+    }else{
+      localStorage.removeItem(SEC_KEY);
+      localStorage.removeItem(SEC_VERIFIER_KEY);
+    }
     if(ind)ind.textContent='✓';
     toast('✅ Đã tải dữ liệu từ cloud'+(pin?' — PIN đồng bộ':'')+(saved?' ('+saved+')':''));
     setTimeout(()=>{if(ind)ind.textContent='';},4000);
@@ -571,9 +583,9 @@ async function syncToGitHub(){
   if(ind)ind.textContent='⏳';
   try{
     const dataFile='felix-data.json';
-    const payload={...db,pin:localStorage.getItem('wtp3_pin')||undefined,_saved:new Date().toISOString()};
+    const payload={...db,pin:getPin()||undefined,_saved:new Date().toISOString()};
     const dataStr2=JSON.stringify(payload);
-    const userPin2=localStorage.getItem('wtp3_pin')||'';
+    const userPin2=getPin();
     const encStr2=userPin2?await encryptData(JSON.parse(dataStr2),userPin2):dataStr2;
     const content=btoa(unescape(encodeURIComponent(encStr2)));
     let sha=undefined;
@@ -618,8 +630,174 @@ async function syncToGitHub(){
     setTimeout(()=>{if(ind)ind.textContent='';},4000);
   }catch(err){
     if(ind)ind.textContent='⚠';
-    toast('Lỗi sync GitHub: '+err.message,'er');
+    // Token chỉ có quyền đọc (read-only) → báo rõ ràng thay vì lỗi khó hiểu
+    const msg=String(err.message||'');
+    if(msg.includes('403')||/not\s*accessible|permission|Resource not accessible/i.test(msg)){
+      toast('🔒 Token này chỉ có quyền ĐỌC — không lưu được. Trên iPhone chỉ cần xem dữ liệu (⬇ Tải cloud). Muốn lưu, dùng token có quyền ghi trên máy tính.','er');
+    }else{
+      toast('Lỗi sync GitHub: '+err.message,'er');
+    }
     console.error(err);
+  }
+  // LỚP 2: sau khi sync chính thành công → ghi snapshot backup theo ngày (không chặn luồng)
+  writeBackupSnapshot().catch(e=>console.warn('Backup snapshot lỗi (bỏ qua):',e.message));
+}
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  LỚP 2 — BACKUP SNAPSHOT THEO NGÀY + KHÔI PHỤC                 ║
+// ║  Mỗi lần sync ghi thêm backup/felix-YYYY-MM-DD.json.          ║
+// ║  Kẻ tấn công ghi đè file chính → bản backup vẫn còn nguyên.   ║
+// ╚══════════════════════════════════════════════════════════════╝
+const BACKUP_DIR='backup';
+const BACKUP_KEEP_DAYS=30; // giữ 30 bản gần nhất, tự dọn bản cũ hơn
+
+// Phát hiện token có quyền ghi không. Trả 'write' | 'read' | 'unknown'.
+// Dựa vào field permissions.push mà GitHub trả khi GET repo.
+async function checkTokenPermission(token){
+  try{
+    const r=await fetch('https://api.github.com/repos/'+GH_DATA_REPO,{
+      headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json'}
+    });
+    if(!r.ok)return 'unknown';
+    const j=await r.json();
+    if(j&&j.permissions){
+      if(j.permissions.push===true)return 'write';
+      if(j.permissions.pull===true)return 'read';
+    }
+    return 'unknown';
+  }catch(e){return 'unknown';}
+}
+
+// Helper: PUT một file lên repo (tự xử lý SHA nếu file đã tồn tại)
+async function _ghPutFile(path,contentB64,message){
+  const token=getGHToken();
+  if(!token)throw new Error('Chưa có token');
+  let sha;
+  const chk=await fetch('https://api.github.com/repos/'+GH_REPO+'/contents/'+path+'?ref='+GH_BRANCH,{
+    headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json'}
+  });
+  if(chk.ok){const j=await chk.json();sha=j.sha;}
+  const body={message,content:contentB64,branch:GH_BRANCH};
+  if(sha)body.sha=sha;
+  const put=await fetch('https://api.github.com/repos/'+GH_REPO+'/contents/'+path,{
+    method:'PUT',
+    headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','Content-Type':'application/json'},
+    body:JSON.stringify(body)
+  });
+  if(!put.ok){const e=await put.json();throw new Error(e.message||put.status);}
+  return true;
+}
+
+// Ghi snapshot backup cho NGÀY HÔM NAY (cùng nội dung đã mã hóa như file chính)
+async function writeBackupSnapshot(){
+  const token=getGHToken();
+  if(!token)return;
+  const payload={...db,pin:getPin()||undefined,_saved:new Date().toISOString()};
+  const pin=getPin();
+  const encStr=pin?await encryptData(payload,pin):JSON.stringify(payload);
+  const content=btoa(unescape(encodeURIComponent(encStr)));
+  // Tên file theo ngày local: backup/felix-2026-05-28.json
+  const d=new Date();
+  const ymd=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  const path=BACKUP_DIR+'/felix-'+ymd+'.json';
+  await _ghPutFile(path,content,'FOXY backup '+ymd);
+  localStorage.setItem('wtp3_last_backup',new Date().toISOString());
+  // Dọn bản cũ quá BACKUP_KEEP_DAYS ngày (chạy nền, không chặn)
+  pruneOldBackups().catch(()=>{});
+}
+
+// Liệt kê các bản backup hiện có trên repo → mảng {date, path, sha}
+async function listBackups(){
+  const token=getGHToken();
+  if(!token)throw new Error('Chưa có token');
+  const r=await fetch('https://api.github.com/repos/'+GH_REPO+'/contents/'+BACKUP_DIR+'?ref='+GH_BRANCH,{
+    headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json'}
+  });
+  if(r.status===404)return []; // chưa có thư mục backup
+  if(!r.ok)throw new Error('HTTP '+r.status);
+  const arr=await r.json();
+  return arr
+    .filter(f=>f.type==='file'&&/^felix-\d{4}-\d{2}-\d{2}\.json$/.test(f.name))
+    .map(f=>({date:f.name.replace(/^felix-|\.json$/g,''),path:f.path,sha:f.sha}))
+    .sort((a,b)=>b.date.localeCompare(a.date)); // mới nhất trước
+}
+
+// Xóa các bản backup cũ hơn BACKUP_KEEP_DAYS
+async function pruneOldBackups(){
+  const token=getGHToken();
+  if(!token)return;
+  const backups=await listBackups();
+  if(backups.length<=BACKUP_KEEP_DAYS)return;
+  const toDelete=backups.slice(BACKUP_KEEP_DAYS); // phần dư phía sau (cũ nhất)
+  for(const b of toDelete){
+    try{
+      await fetch('https://api.github.com/repos/'+GH_REPO+'/contents/'+b.path,{
+        method:'DELETE',
+        headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','Content-Type':'application/json'},
+        body:JSON.stringify({message:'FOXY prune backup '+b.date,sha:b.sha,branch:GH_BRANCH})
+      });
+    }catch(e){/* bỏ qua lỗi dọn dẹp */}
+  }
+}
+
+// Khôi phục từ một bản backup (theo path). Giải mã bằng PIN hiện tại, ghi đè dữ liệu local.
+async function restoreBackup(path,dateLabel){
+  const token=getGHToken();
+  if(!token){toast('Chưa có token','er');return;}
+  if(!confirm('⚠️ KHÔI PHỤC từ bản backup ngày '+dateLabel+'?\n\nDữ liệu hiện tại trên máy này sẽ bị GHI ĐÈ bằng bản backup.\n\nMẹo: dữ liệu hiện tại của bạn cũng đã được sync, nên vẫn có thể quay lại nếu cần.\n\nTiếp tục?'))return;
+  try{
+    toast('Đang khôi phục...','inf');
+    const r=await fetch('https://api.github.com/repos/'+GH_REPO+'/contents/'+path+'?ref='+GH_BRANCH+'&t='+Date.now(),{
+      cache:'no-store',
+      headers:{'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json'}
+    });
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const meta=await r.json();
+    const rawText=decodeURIComponent(escape(atob(meta.content.replace(/\n/g,''))));
+    let data;
+    if(rawText.startsWith(FOXY_ENC_MARKER)||rawText.startsWith(FOXY_ENC_MARKER_V2)){
+      const pin=getPin();
+      if(!pin){toast('❌ Cần PIN để giải mã backup','er');return;}
+      try{data=await decryptData(rawText,pin);}
+      catch(e){toast('❌ Không giải mã được — backup có thể dùng PIN khác','er');return;}
+    }else{
+      data=JSON.parse(rawText);
+    }
+    if(!data||typeof data!=='object')throw new Error('Dữ liệu backup không hợp lệ');
+    delete data.pin;delete data._saved;
+    localStorage.setItem(DB,JSON.stringify(data));
+    db=data;
+    toast('✅ Đã khôi phục từ backup '+dateLabel+' — bấm ⬆ Lưu cloud để đồng bộ lại');
+    closeM();
+    go('dashboard');
+  }catch(err){
+    toast('Lỗi khôi phục: '+err.message,'er');
+    console.error(err);
+  }
+}
+
+// Mở hộp thoại chọn bản backup để khôi phục
+async function openBackupRestore(){
+  const token=getGHToken();
+  if(!token){toast('Chưa có token — vào Settings nhập token trước','er');return;}
+  openM('🗂️ Khôi phục từ backup','<div style="padding:8px;color:var(--t2)">Đang tải danh sách backup...</div>','','md');
+  try{
+    const backups=await listBackups();
+    const box=document.querySelector('#AM .mbd');
+    let html;
+    if(!backups.length){
+      html='<div style="padding:16px;color:var(--t2);font-size:.82rem;line-height:1.5">Chưa có bản backup nào.<br><br>Backup sẽ tự động được tạo mỗi lần bạn bấm <b>⬆ Lưu cloud</b>. Hãy sync ít nhất một lần.</div>';
+    }else{
+      html='<div style="font-size:.78rem;color:var(--t3);margin-bottom:10px">Mỗi lần sync tạo 1 bản theo ngày. Giữ '+BACKUP_KEEP_DAYS+' bản gần nhất. Chọn ngày để khôi phục:</div>';
+      html+=backups.map(b=>`<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--s2);border:1px solid var(--b2);border-radius:8px;padding:10px 12px;margin-bottom:8px">
+        <div><div style="font-weight:600;font-size:.85rem">📅 ${esc(b.date)}</div></div>
+        <button class="btn bg sm" onclick="restoreBackup('${esc(b.path)}','${esc(b.date)}')">↩ Khôi phục</button>
+      </div>`).join('');
+    }
+    if(box)box.innerHTML=html;
+  }catch(err){
+    const box=document.querySelector('#AM .mbd');
+    if(box)box.innerHTML='<div style="padding:16px;color:var(--rd);font-size:.82rem">Lỗi tải danh sách: '+esc(err.message)+'</div>';
   }
 }
 
@@ -634,8 +812,8 @@ function autoCloudSync(){
     if(ind){ind.textContent='☁ Đang lưu...';ind.style.cssText='background:rgba(96,165,250,.15);border-color:rgba(96,165,250,.4);color:#60a5fa;font-size:.7rem;min-width:80px;display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:20px;border:1px solid;transition:all .3s';}
     try{
       const dataFile='felix-data.json';
-      const payload={...db,pin:localStorage.getItem('wtp3_pin')||undefined,_saved:new Date().toISOString()};
-      const userPin=localStorage.getItem('wtp3_pin')||'';
+      const payload={...db,pin:getPin()||undefined,_saved:new Date().toISOString()};
+      const userPin=getPin();
       const encStr=await encryptData(payload,userPin);
       const content=btoa(unescape(encodeURIComponent(encStr)));
       let sha=undefined;
@@ -654,6 +832,12 @@ function autoCloudSync(){
         localStorage.setItem('wtp3_last_cloud_sync',new Date().toISOString());
         if(ind){ind.textContent='☁ Đã lưu ✓';ind.style.cssText='background:rgba(74,222,128,.15);border-color:rgba(74,222,128,.4);color:#4ade80;font-size:.7rem;min-width:80px;display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:20px;border:1px solid;transition:all .3s';}
         setTimeout(()=>{if(ind){ind.textContent='';ind.style.cssText='background:transparent;border-color:transparent;min-width:0;padding:0';}},4000);
+        // LỚP 2: backup theo ngày — chỉ ghi 1 lần/ngày từ luồng tự động để đỡ gọi API
+        const lastBk=localStorage.getItem('wtp3_last_backup');
+        const todayStr=new Date().toDateString();
+        if(!lastBk||new Date(lastBk).toDateString()!==todayStr){
+          writeBackupSnapshot().catch(e=>console.warn('Auto backup lỗi (bỏ qua):',e.message));
+        }
       } else {
         if(ind){ind.textContent='☁ Lỗi ⚠';ind.style.cssText='background:rgba(248,113,113,.15);border-color:rgba(248,113,113,.4);color:#f87171;font-size:.7rem;min-width:80px;display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:20px;border:1px solid;transition:all .3s';}
         setTimeout(()=>{if(ind){ind.textContent='';ind.style.cssText='background:transparent;border-color:transparent;min-width:0;padding:0';}},5000);
@@ -4337,7 +4521,39 @@ async function totpVerify(secret,userCode){
 }
 
 function totpIsEnabled(){return localStorage.getItem(TOTP_ENABLED_KEY)==='1'&&!!localStorage.getItem(TOTP_SECRET_KEY);}
-function getTotpSecret(){return localStorage.getItem(TOTP_SECRET_KEY)||'';}
+
+// TOTP secret được mã hóa AES bằng PIN trước khi lưu (marker FOXY_ENC_V2).
+// Trả về secret base32 đã giải mã. Cần PIN trong RAM (_sessionPin).
+async function getTotpSecret(){
+  const raw=localStorage.getItem(TOTP_SECRET_KEY)||'';
+  if(!raw)return '';
+  // Đã mã hóa → giải mã bằng PIN hiện tại
+  if(raw.startsWith(FOXY_ENC_MARKER)||raw.startsWith(FOXY_ENC_MARKER_V2)){
+    const pin=getPin();
+    if(!pin)return '';
+    try{
+      const dec=await decryptData(raw,pin);
+      return (dec&&dec.s)?dec.s:'';
+    }catch(e){return '';}
+  }
+  // Secret cũ dạng trần → migrate: mã hóa lại ngay bằng PIN nếu có
+  const pin=getPin();
+  if(pin){
+    try{
+      const enc=await encryptData({s:raw},pin);
+      localStorage.setItem(TOTP_SECRET_KEY,enc);
+    }catch(e){}
+  }
+  return raw;
+}
+
+// Lưu secret đã mã hóa bằng PIN
+async function setTotpSecret(secret){
+  const pin=getPin();
+  if(!pin)throw new Error('Cần PIN để lưu TOTP secret');
+  const enc=await encryptData({s:secret},pin);
+  localStorage.setItem(TOTP_SECRET_KEY,enc);
+}
 
 // URI cho QR code (chuẩn otpauth://)
 function totpUri(secret,label){
@@ -4346,13 +4562,65 @@ function totpUri(secret,label){
 }
 // ╚════════════════════════════════════════════════════════╝
 
-const SEC_KEY='wtp3_pin';
-function getPin(){return localStorage.getItem(SEC_KEY)||'';}
+const SEC_KEY='wtp3_pin';            // Legacy key (plaintext) — chỉ còn dùng để migrate
+const SEC_VERIFIER_KEY='wtp3_pin_v'; // Verifier mới: {salt, hash} — KHÔNG chứa PIN
+
+// ── PIN sống trong RAM, KHÔNG lưu trần xuống đĩa ─────────────────────────────
+// _sessionPin: PIN thật. Chỉ tồn tại trong RAM + sessionStorage (per-tab,
+// tự xóa khi đóng tab). KHÔNG bao giờ ghi vào localStorage dạng trần.
+const SESSION_PIN_KEY='wtp3_spin';
+let _sessionPin=sessionStorage.getItem(SESSION_PIN_KEY)||null;
+
+// Băm PIN để tạo verifier (PBKDF2-SHA256, salt ngẫu nhiên). Không thể đảo ngược.
+async function _pinHash(pin,saltB64){
+  const enc=new TextEncoder();
+  const salt=saltB64?Uint8Array.from(atob(saltB64),c=>c.charCodeAt(0)):crypto.getRandomValues(new Uint8Array(16));
+  const km=await crypto.subtle.importKey('raw',enc.encode(pin),{name:'PBKDF2'},false,['deriveBits']);
+  const bits=await crypto.subtle.deriveBits(
+    {name:'PBKDF2',salt,iterations:200000,hash:'SHA-256'},km,256);
+  const hashB64=btoa(String.fromCharCode(...new Uint8Array(bits)));
+  return {salt:saltB64||btoa(String.fromCharCode(...salt)),hash:hashB64};
+}
+
+// Lưu verifier (gọi khi cài/đổi PIN). KHÔNG ghi PIN trần.
+async function _setPinVerifier(pin){
+  const v=await _pinHash(pin,null);
+  localStorage.setItem(SEC_VERIFIER_KEY,JSON.stringify(v));
+  localStorage.removeItem(SEC_KEY); // dọn PIN trần cũ nếu còn
+}
+
+// Kiểm tra PIN nhập vào có khớp verifier không (so sánh hash, không lộ PIN).
+async function verifyPin(pin){
+  // Có verifier mới → so hash
+  const raw=localStorage.getItem(SEC_VERIFIER_KEY);
+  if(raw){
+    try{
+      const v=JSON.parse(raw);
+      const h=await _pinHash(pin,v.salt);
+      return h.hash===v.hash;
+    }catch(e){return false;}
+  }
+  // Chưa có verifier nhưng còn PIN trần cũ → so trực tiếp 1 lần rồi migrate
+  const legacy=localStorage.getItem(SEC_KEY);
+  if(legacy){
+    if(pin===legacy){await _setPinVerifier(pin);return true;}
+    return false;
+  }
+  return false;
+}
+
+// Đã cài PIN chưa? (dựa trên verifier hoặc legacy, không cần biết PIN là gì)
+function pinIsSet(){
+  return !!localStorage.getItem(SEC_VERIFIER_KEY)||!!localStorage.getItem(SEC_KEY);
+}
+
+// getPin(): trả PIN trong RAM. Chỉ có giá trị sau khi mở khóa đúng.
+// Dùng để mã hóa/giải mã dữ liệu. KHÔNG còn đọc từ localStorage.
+function getPin(){return _sessionPin||'';}
+
 function checkPin(){
-  const pin=getPin();
-  if(!pin)return true; // chưa cài PIN → không khóa
-  const unlocked=sessionStorage.getItem('wtp3_unlocked');
-  if(unlocked==='1')return true;
+  if(!pinIsSet())return true;                       // chưa cài PIN → không khóa
+  if(sessionStorage.getItem('wtp3_unlocked')==='1'&&_sessionPin)return true;
   return false;
 }
 function showPinLock(){
@@ -4406,8 +4674,15 @@ function forgotPinRestore(){
   if(!confirm('🔄 Khôi phục từ cloud?\n\nApp sẽ:\n• Xóa PIN cũ trên thiết bị này\n• Reload và yêu cầu bạn nhập GitHub token\n• Tải dữ liệu từ cloud và yêu cầu PIN để giải mã\n\nDữ liệu trên cloud KHÔNG bị xóa.\n\nTiếp tục?'))return;
   try{
     localStorage.removeItem('wtp3_pin');
+    localStorage.removeItem(SEC_VERIFIER_KEY);
+    localStorage.removeItem(TOTP_SECRET_KEY);
+    localStorage.removeItem(TOTP_ENABLED_KEY);
+    localStorage.removeItem(SEC_LOCKOUT_KEY);
+    localStorage.removeItem(SEC_ATTEMPTS_KEY);
     localStorage.removeItem('wtp3_lockout_until');
     localStorage.removeItem('wtp3_pin_attempts');
+    _sessionPin=null;
+    sessionStorage.removeItem(SESSION_PIN_KEY);
     sessionStorage.removeItem('wtp3_unlocked');
     alert('✅ Đã xóa PIN trên thiết bị.\n\nApp sẽ reload. Sau đó:\n1. Vào Settings dán token (nếu chưa có)\n2. Bấm ⬇ Tải cloud\n3. Nhập PIN cũ khi được hỏi');
     location.reload();
@@ -4426,14 +4701,17 @@ async function submitPin(){
     return;
   }
   const entered=input.value.trim();
-  if(entered===getPin()){
+  if(await verifyPin(entered)){
     localStorage.setItem(SEC_ATTEMPTS_KEY,'0');
+    _sessionPin=entered;
     // Nếu đã bật TOTP → yêu cầu nhập mã 6 số trước khi vào
     if(totpIsEnabled()){
       showTotpScreen();
       return;
     }
     secLog('login_ok','Đăng nhập thành công');
+    // PIN giữ trong sessionStorage (per-tab, tự xóa khi đóng tab) — KHÔNG vào localStorage
+    sessionStorage.setItem(SESSION_PIN_KEY,entered);
     sessionStorage.setItem('wtp3_unlocked','1');
     location.reload();
   } else {
@@ -4480,9 +4758,10 @@ async function submitTotp(){
     if(err)err.textContent='❌ Mã phải là 6 chữ số';
     return;
   }
-  const ok=await totpVerify(getTotpSecret(),code);
+  const ok=await totpVerify(await getTotpSecret(),code);
   if(ok){
     secLog('login_ok','Đăng nhập thành công (PIN + 2FA)');
+    if(_sessionPin)sessionStorage.setItem(SESSION_PIN_KEY,_sessionPin);
     sessionStorage.setItem('wtp3_unlocked','1');
     location.reload();
   } else {
@@ -4545,7 +4824,12 @@ async function totpSetupConfirm(){
     if(err)err.textContent='❌ Mã sai — kiểm tra lại trên Google Authenticator (mã đổi mỗi 30s)';
     return;
   }
-  localStorage.setItem(TOTP_SECRET_KEY,_totpPendingSecret);
+  try{
+    await setTotpSecret(_totpPendingSecret);
+  }catch(e){
+    if(err)err.textContent='❌ '+e.message;
+    return;
+  }
   localStorage.setItem(TOTP_ENABLED_KEY,'1');
   _totpPendingSecret=null;
   secLog('totp_enabled','Đã bật xác thực 2 lớp');
@@ -6599,6 +6883,12 @@ P.settings=function(){
           </label>
         </div>
         <div class="fh">${localStorage.getItem('wtp3_last_cloud_sync')?'☁ Sync cloud lần cuối: '+new Date(localStorage.getItem('wtp3_last_cloud_sync')).toLocaleString('vi-VN'):'Chưa sync cloud lần nào'}</div>
+        <div style="border-top:1px solid var(--b2);margin-top:12px;padding-top:12px">
+          <div style="font-size:.78rem;font-weight:600;margin-bottom:4px">🛡️ Backup chống mất/chống phá dữ liệu</div>
+          <div class="fh" style="margin-bottom:8px">Mỗi lần sync, app tự lưu thêm 1 bản backup theo ngày. Nếu dữ liệu chính bị ghi đè hoặc hỏng, bạn khôi phục lại từ đây.</div>
+          <button class="btn bg sm" onclick="openBackupRestore()" style="width:100%">🗂️ Xem & khôi phục từ backup</button>
+          <div class="fh">${localStorage.getItem('wtp3_last_backup')?'💾 Backup gần nhất: '+new Date(localStorage.getItem('wtp3_last_backup')).toLocaleString('vi-VN'):'Chưa có backup — sync cloud một lần để tạo'}</div>
+        </div>
       </div>
       <div class="card">
         <div class="ct">☁ Google Drive Sync</div>
@@ -6651,7 +6941,7 @@ P.settings=function(){
         <div class="fh">Nhận cảnh báo ngay khi có người nhập sai PIN</div>
         <div class="ct" style="margin-top:12px">🔐 Bảo mật PIN / Passphrase</div>
         <div class="fg"><label>Mã PIN hoặc passphrase (4–64 ký tự, để trống = tắt)</label>
-          <input type="password" id="pinSet" maxlength="64" placeholder="${getPin()?'Đã cài PIN — nhập mới để đổi':'Khuyến nghị: passphrase ≥12 ký tự'}" oninput="updatePinStrength()">
+          <input type="password" id="pinSet" maxlength="64" placeholder="${pinIsSet()?'Đã cài PIN — nhập mới để đổi':'Khuyến nghị: passphrase ≥12 ký tự'}" oninput="updatePinStrength()">
           <div id="pinStrength" style="margin-top:6px;font-size:.72rem;min-height:18px"></div>
         </div>
         <div class="fg"><label>Xác nhận lại passphrase</label>
@@ -6674,7 +6964,7 @@ P.settings=function(){
         </div>
         <div class="flex g8 mt8">
           <button class="btn bp sm" onclick="savePin()">💾 Lưu PIN & Sync</button>
-          ${getPin()?`<button class="btn brd sm" onclick="removePin()">🔓 Tắt PIN</button>`:''}
+          ${pinIsSet()?`<button class="btn brd sm" onclick="removePin()">🔓 Tắt PIN</button>`:''}
         </div>
         <div class="ct" style="margin-top:12px">🔑 Xác thực 2 lớp (Google Authenticator)</div>
         <div class="fg">
@@ -6755,9 +7045,15 @@ async function savePin(){
 
   // Trường hợp để trống → tắt PIN (cần xác nhận)
   if(!v){
-    if(!getPin()){toast('Chưa có PIN để tắt','inf');return;}
+    if(!pinIsSet()){toast('Chưa có PIN để tắt','inf');return;}
     if(!confirm('⚠️ Tắt PIN?\n\nDữ liệu cloud sẽ KHÔNG còn mã hóa.\nMọi người có token đều đọc được.\n\nXác nhận tắt?'))return;
     localStorage.removeItem(SEC_KEY);
+    localStorage.removeItem(SEC_VERIFIER_KEY);
+    // Tắt luôn TOTP vì secret được mã hóa bằng PIN — không còn PIN thì vô dụng
+    localStorage.removeItem(TOTP_SECRET_KEY);
+    localStorage.removeItem(TOTP_ENABLED_KEY);
+    _sessionPin=null;
+    sessionStorage.removeItem(SESSION_PIN_KEY);
     delete db.pin;
     save();
     toast('🔓 PIN đã tắt — dữ liệu không còn mã hóa','er');
@@ -6798,22 +7094,42 @@ async function savePin(){
   }
 
   // CẢNH BÁO CUỐI — passphrase mất là mất dữ liệu vĩnh viễn
-  const isNew=!getPin();
+  const isNew=!pinIsSet();
   const finalMsg=isNew
     ? '🔐 XÁC NHẬN CUỐI\n\nBạn sắp cài passphrase mới:\n• Độ dài: '+v.length+' ký tự\n• Độ mạnh: '+strength.text+'\n\n⚠️ QUAN TRỌNG: Nếu mất passphrase này, KHÔNG thể khôi phục dữ liệu. App không có "Quên mật khẩu".\n\nHãy:\n1. Ghi passphrase vào password manager (1Password, Bitwarden, iCloud Keychain)\n2. HOẶC ghi giấy cất nơi an toàn\n\nXác nhận lưu?'
     : '🔐 XÁC NHẬN ĐỔI PASSPHRASE\n\n• Độ dài mới: '+v.length+' ký tự\n• Độ mạnh: '+strength.text+'\n\n⚠️ Sau khi đổi: dữ liệu cloud cũ vẫn dùng PIN cũ. Bấm ⬆ Lưu cloud để re-encrypt với passphrase mới.\n\nXác nhận đổi?';
   if(!confirm(finalMsg))return;
 
-  // Lưu
-  localStorage.setItem(SEC_KEY,v);
-  db.pin=v;
+  // Nếu đang đổi PIN và đã bật TOTP → giải mã secret bằng PIN cũ rồi mã hóa lại bằng PIN mới
+  let totpSecretToReEncrypt=null;
+  if(!isNew&&totpIsEnabled()){
+    totpSecretToReEncrypt=await getTotpSecret(); // dùng PIN cũ trong RAM
+  }
+
+  // Lưu: verifier (hash) thay vì PIN trần
+  await _setPinVerifier(v);
+  _sessionPin=v;
+  sessionStorage.setItem(SESSION_PIN_KEY,v);
+  db.pin=v; // vẫn cần để sync cloud (dữ liệu cloud mã hóa bằng PIN này)
+
+  // Mã hóa lại TOTP secret bằng PIN mới
+  if(totpSecretToReEncrypt){
+    try{await setTotpSecret(totpSecretToReEncrypt);}catch(e){}
+  }
+
   save();
   toast('✅ Đã lưu passphrase — Bấm ⬆ Lưu cloud để mã hóa lại dữ liệu trên repo');
   P.settings();
 }
 function removePin(){
   if(!confirm('Tắt bảo vệ PIN?'))return;
-  localStorage.removeItem(SEC_KEY);sessionStorage.setItem('wtp3_unlocked','1');
+  localStorage.removeItem(SEC_KEY);
+  localStorage.removeItem(SEC_VERIFIER_KEY);
+  localStorage.removeItem(TOTP_SECRET_KEY);
+  localStorage.removeItem(TOTP_ENABLED_KEY);
+  _sessionPin=null;
+  sessionStorage.removeItem(SESSION_PIN_KEY);
+  sessionStorage.setItem('wtp3_unlocked','1');
   toast('🔓 Đã tắt PIN','inf');P.settings();
 }
 
@@ -6835,7 +7151,7 @@ async function autoLoadCloudOnMobile(){
     const rawTxt=decodeURIComponent(escape(atob(meta.content.replace(/\n/g,''))));
     let data;
     if(rawTxt.startsWith(FOXY_ENC_MARKER)||rawTxt.startsWith(FOXY_ENC_MARKER_V2)){
-      const mPin=localStorage.getItem('wtp3_pin')||'';
+      const mPin=getPin();
       if(!mPin)return; // Không có PIN → bỏ qua
       try{data=await decryptData(rawTxt,mPin);}catch(e){return;}
     } else {
@@ -6854,7 +7170,11 @@ async function autoLoadCloudOnMobile(){
     delete data.pin;delete data._saved;
     localStorage.setItem(DB,JSON.stringify(data));
     db=data;
-    if(pin){localStorage.setItem('wtp3_pin',pin);}
+    if(pin){
+      // Đồng bộ verifier (KHÔNG lưu PIN trần). PIN đã có trong RAM từ lúc mở khóa.
+      if(!localStorage.getItem(SEC_VERIFIER_KEY)){try{await _setPinVerifier(pin);}catch(e){}}
+      if(!_sessionPin){_sessionPin=pin;sessionStorage.setItem(SESSION_PIN_KEY,pin);}
+    }
     localStorage.setItem('wtp3_last_cloud_sync',new Date().toISOString());
     go('dashboard');
     // Hiện toast nhỏ
@@ -6903,8 +7223,8 @@ async function endSession(){
     // Sync lần cuối trước khi xóa
     if(getGHToken()){
       const dataFile='felix-data.json';
-      const payload={...db,pin:localStorage.getItem('wtp3_pin')||undefined,_saved:new Date().toISOString()};
-      const endPin=localStorage.getItem('wtp3_pin')||'';
+      const payload={...db,pin:getPin()||undefined,_saved:new Date().toISOString()};
+      const endPin=getPin();
       const encPayload=endPin?await encryptData(JSON.parse(JSON.stringify(payload)),endPin):JSON.stringify(payload);
       const content=btoa(unescape(encodeURIComponent(encPayload)));
       let sha=undefined;
@@ -7011,8 +7331,18 @@ async function loadFromSheets(){
 }
 
 // ── INIT ─────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded',function(){
+document.addEventListener('DOMContentLoaded',async function(){
   try{
+    // Migrate: nếu db nhập vào có field pin trần và thiết bị chưa có verifier → tạo verifier
+    if(_pendingDbPin&&!localStorage.getItem(SEC_VERIFIER_KEY)){
+      try{await _setPinVerifier(_pendingDbPin);}catch(e){}
+    }
+    // Migrate: nếu còn PIN trần kiểu cũ (wtp3_pin) → chuyển sang verifier, xóa bản trần
+    const _legacyPin=localStorage.getItem(SEC_KEY);
+    if(_legacyPin&&!localStorage.getItem(SEC_VERIFIER_KEY)){
+      try{await _setPinVerifier(_legacyPin);}catch(e){}
+    }
+    _pendingDbPin=null;
     // Kiểm tra PIN
     if(!checkPin()){showPinLock();return;}
     // Wire nav
