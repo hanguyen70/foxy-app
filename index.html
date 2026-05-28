@@ -211,6 +211,7 @@ textarea{resize:vertical;min-height:56px;}
         <span class="tb-title" id="PT">Dashboard</span>
       </div>
       <div class="tb-r">
+        <button class="btn bg sm mobile-only" onclick="go('dashboard')" title="Về trang chủ">🏠</button>
         <button class="btn bg sm desktop-only" onclick="syncDrive()">☁ GAS</button>
         <button onclick="syncToGitHub()" title="Sync lên GitHub → iPhone" class="btn bg sm desktop-only">⬆ Lưu cloud</button>
         <button class="btn bg sm" onclick="loadFromGitHub()" title="Tải dữ liệu mới nhất từ GitHub">⬇ Tải cloud</button>
@@ -235,7 +236,7 @@ textarea{resize:vertical;min-height:56px;}
 <script>
 'use strict';
 // ── APP VERSION & UPDATE CHECK ───────────────────────────────────
-const APP_VERSION='2.1.2';
+const APP_VERSION='2.1.3';
 const APP_BUILD_DATE='2026-05-28';
 const VERSION_CHECK_URL='https://raw.githubusercontent.com/Hanguyen70/Foxy-app/main/version.json';
 const VERSION_CHECK_INTERVAL=24*60*60*1000; // 24 giờ
