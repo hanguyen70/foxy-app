@@ -1,13 +1,13 @@
 {
-  "version": "2.0.0",
-  "released": "2026-05-13",
-  "critical": false,
+  "version": "2.1.0",
+  "released": "2026-05-28",
+  "critical": true,
   "changelog": [
-    "Mã hóa V2: PBKDF2 600,000 iterations + random salt 16 bytes",
-    "Hỗ trợ passphrase 4-64 ký tự (chữ + số + đặc biệt)",
-    "Xác nhận passphrase 2 lần khi đổi + cảnh báo độ mạnh real-time",
-    "Tách repo: dữ liệu private (FOXY), code public (Foxy-app)",
-    "Hệ thống thông báo cập nhật tự động"
+    "Bảo mật: PIN không còn lưu dạng văn bản thường — chuyển sang verifier hash (PBKDF2)",
+    "Bảo mật: TOTP secret được mã hóa bằng PIN trước khi lưu",
+    "Backup tự động theo ngày trên repo + nút khôi phục trong Settings",
+    "Nhận biết quyền token (đọc / đọc-ghi) khi nhập, báo lỗi rõ ràng",
+    "Token chỉ-đọc trên iPhone: báo rõ khi không lưu được thay vì lỗi khó hiểu"
   ],
   "_note": "File này được app FOXY check 24h/lần. Khi release bản mới, bump 'version' và update 'changelog' + 'released'. Đặt 'critical: true' nếu bản cập nhật buộc phải apply (vd: sửa lỗi bảo mật)."
 }
